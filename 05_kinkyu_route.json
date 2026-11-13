@@ -1,0 +1,48 @@
+{
+ "name"		:"route_01"
+,"color"	:"#070690"
+,"weight"	:4
+,"type"		:"solid"
+}
+,
+{
+ "name"		:"route_02"
+,"color"	:"#1C26F9"
+,"weight"	:3
+,"type"		:"solid"
+}
+,
+{
+ "name"		:"route_03"
+,"color"	:"#10F51C"
+,"weight"	:3
+,"type"		:"solid"
+}
+,
+{
+ "name"		:"route_04"
+,"color"	:"#F7811D"
+,"weight"	:3
+,"type"		:"solid"
+}
+,
+{
+ "name"		:"route_05"
+,"color"	:"#000000"
+,"weight"	:3
+,"type"		:"dashed"
+}
+,
+{
+ "name"		:"route_06"
+,"color"	:"#1FF5F7"
+,"weight"	:3
+,"type"		:"dashed"
+}
+,
+{
+ "name"		:"route_00"
+,"color"	:"#CA17B9"
+,"weight"	:3
+,"type"		:"dashed"
+}
