@@ -140,6 +140,76 @@ def cached_precompute_detours(
     )
 
 
+def _show_loading_overlay(placeholder, title: str, body_html: str) -> None:
+    """画面中央にスピナーと案内文のローディングオーバーレイを表示する."""
+    placeholder.markdown(
+        f"""
+        <style>
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+        </style>
+        <div style="
+            position: fixed;
+            inset: 0;
+            z-index: 999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 23, 42, 0.35);
+            backdrop-filter: blur(2px);
+            padding: 24px;
+        ">
+            <div style="
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 40px 48px;
+                width: 100%;
+                max-width: 680px;
+                background: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 16px;
+                box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22);
+                text-align: center;
+            ">
+                <div style="
+                    width: 52px;
+                    height: 52px;
+                    border: 6px solid #e2e8f0;
+                    border-top: 6px solid #2563eb;
+                    border-radius: 50%;
+                    animation: spin 1s linear infinite;
+                    margin-bottom: 20px;
+                "></div>
+                <h3 style="
+                    margin: 0 0 12px 0;
+                    color: #0f172a;
+                    font-size: 1.25rem;
+                    white-space: nowrap;
+                    word-break: keep-all;
+                ">
+                    {title}
+                </h3>
+                <p style="
+                    margin: 0;
+                    color: #475569;
+                    font-size: 0.95rem;
+                    line-height: 1.8;
+                    white-space: nowrap;
+                    word-break: keep-all;
+                ">
+                    {body_html}
+                </p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _score_to_color(score: float) -> str:
     """総合優先度スコア（0〜100）に応じて緑→黄→赤のカラーコードを返す."""
     if score >= 80:
@@ -703,72 +773,11 @@ def main() -> None:
 
     loading_placeholder = st.empty()
     if needs_initial_fetch:
-        loading_placeholder.markdown(
-            f"""
-            <style>
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-            </style>
-            <div style="
-                position: fixed;
-                inset: 0;
-                z-index: 999999;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: rgba(15, 23, 42, 0.35);
-                backdrop-filter: blur(2px);
-                padding: 24px;
-            ">
-                <div style="
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 40px 48px;
-                    width: 100%;
-                    max-width: 680px;
-                    background: #ffffff;
-                    border: 1px solid #cbd5e1;
-                    border-radius: 16px;
-                    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22);
-                    text-align: center;
-                ">
-                    <div style="
-                        width: 52px;
-                        height: 52px;
-                        border: 6px solid #e2e8f0;
-                        border-top: 6px solid #2563eb;
-                        border-radius: 50%;
-                        animation: spin 1s linear infinite;
-                        margin-bottom: 20px;
-                    "></div>
-                    <h3 style="
-                        margin: 0 0 12px 0;
-                        color: #0f172a;
-                        font-size: 1.25rem;
-                        white-space: nowrap;
-                        word-break: keep-all;
-                    ">
-                        {selected_muni} の道路ネットワーク・防災拠点を取得中...
-                    </h3>
-                    <p style="
-                        margin: 0;
-                        color: #475569;
-                        font-size: 0.95rem;
-                        line-height: 1.8;
-                        white-space: nowrap;
-                        word-break: keep-all;
-                    ">
-                        OpenStreetMap から道路網および医療機関・避難施設の座標を取得しています。<br>
-                        （2回目以降はキャッシュから高速表示されます）
-                    </p>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        _show_loading_overlay(
+            loading_placeholder,
+            f"{selected_muni} の道路ネットワーク・防災拠点を取得中...",
+            "OpenStreetMap から道路網および医療機関・避難施設の座標を取得しています。<br>"
+            "（2回目以降はキャッシュから高速表示されます）",
         )
 
     G = None
@@ -813,6 +822,25 @@ def main() -> None:
     ):
         st.session_state["selected_facility_id"] = valid_ids[0]
 
+    switching_facility = bool(st.session_state.pop("_facility_switched", False))
+
+    # ランキング表（st.data_editor）のチェック変更を先に検知し、1回の実行で即座に切り替える
+    prev_selected_id = st.session_state["selected_facility_id"]
+    prev_editor_key = f"ranking_editor_{selected_muni}_{category_filter}_{only_emergency}_{prev_selected_id}"
+    editor_state = st.session_state.get(prev_editor_key)
+    if isinstance(editor_state, dict):
+        edited_rows = editor_state.get("edited_rows") or {}
+        for row_idx_raw, changes in edited_rows.items():
+            if isinstance(changes, dict) and changes.get("選択") is True:
+                pos = int(row_idx_raw)
+                if 0 <= pos < len(df_ranked):
+                    new_id = str(df_ranked.iloc[pos]["id"])
+                    if new_id != prev_selected_id:
+                        st.session_state["selected_facility_id"] = new_id
+                        st.session_state.pop(prev_editor_key, None)
+                        switching_facility = True
+                        break
+
     # サイドバーのドロップダウンと選択施設IDを双方向同期
     st.session_state["sidebar_facility_select"] = st.session_state[
         "selected_facility_id"
@@ -822,6 +850,7 @@ def main() -> None:
         st.session_state["selected_facility_id"] = st.session_state[
             "sidebar_facility_select"
         ]
+        st.session_state["_facility_switched"] = True
 
     with st.sidebar:
         st.divider()
@@ -842,6 +871,14 @@ def main() -> None:
 
     selected_id = st.session_state["selected_facility_id"]
     selected_row = df_ranked[df_ranked["id"] == selected_id].iloc[0]
+
+    if switching_facility:
+        _show_loading_overlay(
+            loading_placeholder,
+            f"{selected_row['name']} の迂回ルート・地図を更新中...",
+            "通行止め時の迂回経路・最寄り病院への搬送遅延を再計算しています。<br>"
+            "（数秒で地図とランキングが更新されます）",
+        )
 
     if network_error:
         st.warning(f"道路ネットワーク解析でエラーが発生しました: {network_error}")
@@ -980,10 +1017,12 @@ def main() -> None:
             returned_objects=["last_object_clicked"],
             key=f"map_{selected_muni}_{category_filter}_{only_emergency}_{selected_id}_{show_emergency}_{show_hospitals}_{show_shelters}_{show_pop_mesh}",
         )
+        loading_placeholder.empty()
 
         clicked_id = _find_clicked_facility_id(map_state, df_ranked)
         if clicked_id and clicked_id != st.session_state["selected_facility_id"]:
             st.session_state["selected_facility_id"] = clicked_id
+            st.session_state["_facility_switched"] = True
             st.rerun()
 
         st.subheader("総合優先度ランキング（チェックで地図・迂回シミュレーションと連動）")

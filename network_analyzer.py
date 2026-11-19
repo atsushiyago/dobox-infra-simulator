@@ -245,11 +245,11 @@ def _build_graph_from_overpass_elements(elements: list[dict]) -> nx.MultiDiGraph
                         dy = (lat_k - lat_p) * m_per_lat
                         length_m += math.hypot(dx, dy)
 
-                geom_fwd = LineString(coords_lonlat) if len(coords_lonlat) > 2 else None
+                geom_fwd = LineString(coords_lonlat) if len(coords_lonlat) >= 2 else None
                 if oneway == "-1":
                     geom_rev = (
                         LineString(list(reversed(coords_lonlat)))
-                        if len(coords_lonlat) > 2
+                        if len(coords_lonlat) >= 2
                         else None
                     )
                     attr_r = {"length": round(length_m, 2), "highway": hw}
@@ -269,7 +269,7 @@ def _build_graph_from_overpass_elements(elements: list[dict]) -> nx.MultiDiGraph
 
                     geom_rev = (
                         LineString(list(reversed(coords_lonlat)))
-                        if len(coords_lonlat) > 2
+                        if len(coords_lonlat) >= 2
                         else None
                     )
                     attr_r = {"length": round(length_m, 2), "highway": hw}
@@ -336,10 +336,10 @@ def _build_fallback_graph(
                 dy = (sub[k][0] - sub[k - 1][0]) * m_per_lat
                 length_m += math.hypot(dx, dy)
             length_m = max(10.0, round(length_m, 2))
-            geom_f = LineString(coords_lonlat) if len(coords_lonlat) > 2 else None
+            geom_f = LineString(coords_lonlat) if len(coords_lonlat) >= 2 else None
             geom_r = (
                 LineString(list(reversed(coords_lonlat)))
-                if len(coords_lonlat) > 2
+                if len(coords_lonlat) >= 2
                 else None
             )
             attr_f = {"length": length_m, "highway": "primary"}
@@ -351,30 +351,140 @@ def _build_fallback_graph(
             G.add_edge(u, v, **attr_f)
             G.add_edge(v, u, **attr_r)
 
-    # 施設座標の近傍を既存ノードまたは相互に接続して孤立を防ぐ
-    if df_area is not None and not df_area.empty:
-        existing_nodes = [(n, d["y"], d["x"]) for n, d in G.nodes(data=True)]
+    # 緊急輸送道路同士の交差点・近接端点（60m以内）を接続して道路網を連結する
+    if G.number_of_edges() > 0:
+        from shapely.ops import substring as _substring
+
+        deg_nodes = [
+            (n, float(d["y"]), float(d["x"]))
+            for n, d in G.nodes(data=True)
+            if G.out_degree(n) <= 2
+        ]
+        for nid, n_lat, n_lon in deg_nodes:
+            pt = Point(n_lon, n_lat)
+            best_target = None
+            best_dist_m = 60.0
+            for eu, ev, ek, edata in list(G.edges(keys=True, data=True)):
+                if eu == nid or ev == nid:
+                    continue
+                geom = edata.get("geometry")
+                if geom is None:
+                    geom = LineString(
+                        [(G.nodes[eu]["x"], G.nodes[eu]["y"]), (G.nodes[ev]["x"], G.nodes[ev]["y"])]
+                    )
+                proj_d = float(geom.project(pt))
+                snap_pt = geom.interpolate(proj_d)
+                d_m = math.hypot((float(snap_pt.x) - n_lon) * m_per_lon, (float(snap_pt.y) - n_lat) * m_per_lat)
+                if d_m < best_dist_m:
+                    best_dist_m = d_m
+                    best_target = (eu, ev, ek, edata, geom, proj_d, snap_pt)
+            if best_target is not None:
+                eu, ev, ek, edata, geom, proj_d, snap_pt = best_target
+                s_lon, s_lat = float(snap_pt.x), float(snap_pt.y)
+                snap_nid = _get_or_add_node(s_lat, s_lon)
+                total_len = float(geom.length)
+                if (
+                    snap_nid != eu
+                    and snap_nid != ev
+                    and total_len > 1e-9
+                    and 0.02 * total_len < proj_d < 0.98 * total_len
+                ):
+                    g1 = _substring(geom, 0.0, proj_d)
+                    g2 = _substring(geom, proj_d, total_len)
+                    orig_len_m = float(edata.get("length", 100.0))
+                    r = proj_d / total_len
+                    l1 = max(5.0, round(orig_len_m * r, 2))
+                    l2 = max(5.0, round(orig_len_m * (1.0 - r), 2))
+                    if G.has_edge(eu, ev, key=ek):
+                        G.remove_edge(eu, ev, key=ek)
+                    for rk in [
+                        rk for rk, rd in (G.get_edge_data(ev, eu) or {}).items()
+                        if abs(float(rd.get("length", 0.0)) - orig_len_m) < 5.0
+                    ][:1]:
+                        G.remove_edge(ev, eu, key=rk)
+                    if len(g1.coords) >= 2:
+                        G.add_edge(eu, snap_nid, length=l1, highway="primary", geometry=g1)
+                        G.add_edge(snap_nid, eu, length=l1, highway="primary", geometry=LineString(list(reversed(g1.coords))))
+                    if len(g2.coords) >= 2:
+                        G.add_edge(snap_nid, ev, length=l2, highway="primary", geometry=g2)
+                        G.add_edge(ev, snap_nid, length=l2, highway="primary", geometry=LineString(list(reversed(g2.coords))))
+                if nid != snap_nid and not G.has_edge(nid, snap_nid):
+                    conn_len = max(5.0, round(best_dist_m, 2))
+                    g_c = LineString([(n_lon, n_lat), (s_lon, s_lat)])
+                    g_cr = LineString([(s_lon, s_lat), (n_lon, n_lat)])
+                    G.add_edge(nid, snap_nid, length=conn_len, highway="primary", geometry=g_c)
+                    G.add_edge(snap_nid, nid, length=conn_len, highway="primary", geometry=g_cr)
+
+    # 施設座標を道路エッジ上の最近接点へスナップして接続する（施設同士の直線短絡は作らない）
+    if df_area is not None and not df_area.empty and G.number_of_edges() > 0:
+        from shapely.ops import substring
+
         for _, row in df_area.iterrows():
             f_lat, f_lon = float(row["lat"]), float(row["lon"])
-            u = _get_or_add_node(f_lat, f_lon)
-            if G.out_degree(u) == 0 and existing_nodes:
-                # 最も近い既存ノード2点へ接続
-                dists = [
-                    (
-                        math.hypot(
-                            (f_lon - nx_lon) * m_per_lon, (f_lat - nx_lat) * m_per_lat
-                        ),
-                        nid,
+            pt = Point(f_lon, f_lat)
+
+            # 現在の道路エッジから最寄りエッジを探索
+            best_edge = None
+            best_dist = float("inf")
+            best_line = None
+            for eu, ev, ek, edata in G.edges(keys=True, data=True):
+                if edata.get("highway") == "access":
+                    continue
+                geom = edata.get("geometry")
+                if geom is None:
+                    geom = LineString(
+                        [(G.nodes[eu]["x"], G.nodes[eu]["y"]), (G.nodes[ev]["x"], G.nodes[ev]["y"])]
                     )
-                    for nid, nx_lat, nx_lon in existing_nodes
-                    if nid != u
+                d = pt.distance(geom)
+                if d < best_dist:
+                    best_dist = d
+                    best_edge = (eu, ev, ek, edata)
+                    best_line = geom
+
+            if best_edge is None or best_line is None:
+                continue
+
+            eu, ev, ek, edata = best_edge
+            proj_dist = float(best_line.project(pt))
+            total_len = float(best_line.length)
+            snap_pt = best_line.interpolate(proj_dist)
+            snap_lon, snap_lat = float(snap_pt.x), float(snap_pt.y)
+            snap_nid = _get_or_add_node(snap_lat, snap_lon)
+
+            # エッジの途中であれば元の道路形状を保ったまま2区間に分割
+            if (
+                snap_nid != eu
+                and snap_nid != ev
+                and total_len > 1e-9
+                and 0.02 * total_len < proj_dist < 0.98 * total_len
+            ):
+                geom_1 = substring(best_line, 0.0, proj_dist)
+                geom_2 = substring(best_line, proj_dist, total_len)
+                orig_len_m = float(edata.get("length", 100.0))
+                ratio = proj_dist / total_len
+                len_1 = max(5.0, round(orig_len_m * ratio, 2))
+                len_2 = max(5.0, round(orig_len_m * (1.0 - ratio), 2))
+                hw_type = edata.get("highway", "primary")
+
+                if G.has_edge(eu, ev, key=ek):
+                    G.remove_edge(eu, ev, key=ek)
+                # 逆向きペアも同様に置換
+                rev_keys = [
+                    rk
+                    for rk, rd in (G.get_edge_data(ev, eu) or {}).items()
+                    if abs(float(rd.get("length", 0.0)) - orig_len_m) < 5.0
                 ]
-                dists.sort()
-                for d_m, target_nid in dists[:2]:
-                    len_m = max(20.0, round(d_m, 2))
-                    G.add_edge(u, target_nid, length=len_m, highway="secondary")
-                    G.add_edge(target_nid, u, length=len_m, highway="secondary")
-            existing_nodes.append((u, f_lat, f_lon))
+                for rk in rev_keys[:1]:
+                    G.remove_edge(ev, eu, key=rk)
+
+                if len(geom_1.coords) >= 2:
+                    g1_rev = LineString(list(reversed(geom_1.coords)))
+                    G.add_edge(eu, snap_nid, length=len_1, highway=hw_type, geometry=geom_1)
+                    G.add_edge(snap_nid, eu, length=len_1, highway=hw_type, geometry=g1_rev)
+                if len(geom_2.coords) >= 2:
+                    g2_rev = LineString(list(reversed(geom_2.coords)))
+                    G.add_edge(snap_nid, ev, length=len_2, highway=hw_type, geometry=geom_2)
+                    G.add_edge(ev, snap_nid, length=len_2, highway=hw_type, geometry=g2_rev)
 
     return G
 
@@ -477,7 +587,7 @@ def load_road_network(
                     endpoint,
                     data={"data": query},
                     headers=_OVERPASS_HEADERS,
-                    timeout=5,
+                    timeout=12,
                 )
                 if resp.status_code == 200:
                     payload = resp.json()
@@ -572,18 +682,45 @@ def _fast_nearest_nodes(
 
 
 def _edge_coords(
-    G: nx.MultiDiGraph, u: int, v: int, key: int
+    G: nx.MultiDiGraph,
+    u: int,
+    v: int,
+    key: int,
+    truncate_long_straight: bool = False,
 ) -> list[tuple[float, float]]:
-    """エッジのジオメトリ（または両端ノード座標）を (lat, lon) リストで返す."""
+    """エッジのジオメトリ（または両端ノード座標）を u -> v 順の (lat, lon) リストで返す."""
     data = G.get_edge_data(u, v, key) or {}
     geom = data.get("geometry")
-    if geom is not None:
-        return [(float(y), float(x)) for x, y in geom.coords]
+    if isinstance(geom, str):
+        try:
+            from shapely import wkt
+
+            geom = wkt.loads(geom)
+        except Exception:
+            geom = None
+
     u_lat, u_lon = float(G.nodes[u]["y"]), float(G.nodes[u]["x"])
     v_lat, v_lon = float(G.nodes[v]["y"]), float(G.nodes[v]["x"])
+
+    if geom is not None:
+        if getattr(geom, "geom_type", "") == "MultiLineString":
+            raw_coords = [pt for part in geom.geoms for pt in part.coords]
+        else:
+            raw_coords = list(getattr(geom, "coords", []))
+        if len(raw_coords) >= 2:
+            coords = [(float(y), float(x)) for x, y in raw_coords]
+            if u != v:
+                d_start_u = math.hypot(coords[0][0] - u_lat, coords[0][1] - u_lon)
+                d_start_v = math.hypot(coords[0][0] - v_lat, coords[0][1] - v_lon)
+                d_end_u = math.hypot(coords[-1][0] - u_lat, coords[-1][1] - u_lon)
+                d_end_v = math.hypot(coords[-1][0] - v_lat, coords[-1][1] - v_lon)
+                if d_start_v + d_end_u < d_start_u + d_end_v:
+                    coords.reverse()
+            return coords
+
     dist_deg = math.hypot(v_lat - u_lat, v_lon - u_lon)
-    # ジオメトリがない場合、直線距離が長すぎる（>200m）場合は施設周辺の短い区間（約60m）のみを表示して山を貫く長距離直線を防ぐ
-    if dist_deg > 0.002:
+    # 単一通行止め区間のフォールバック表示時のみ、極端に長い直線（>200m）を短い区間（約60m）に抑える
+    if truncate_long_straight and dist_deg > 0.002:
         ratio = 0.0006 / dist_deg
         return [
             (u_lat, u_lon),
@@ -605,13 +742,16 @@ def _path_coords(G: nx.MultiDiGraph, node_path: list[int]) -> list[tuple[float, 
         if not edges:
             continue
         best_key = min(
-            edges.keys(), key=lambda k: float(edges[k].get("length", float("inf")))
+            edges.keys(),
+            key=lambda k: (
+                float(edges[k].get("length", float("inf"))),
+                0 if edges[k].get("geometry") is not None else 1,
+            ),
         )
-        seg = _edge_coords(G, u, v, best_key)
-        if coords and seg and coords[-1] == seg[0]:
-            coords.extend(seg[1:])
-        else:
-            coords.extend(seg)
+        seg = _edge_coords(G, u, v, best_key, truncate_long_straight=False)
+        for pt in seg:
+            if not coords or coords[-1] != pt:
+                coords.append(pt)
     return coords
 
 
