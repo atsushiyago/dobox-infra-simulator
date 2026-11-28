@@ -10,14 +10,14 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
-# OSMnx / application local cache（初期表示の尾道市キャッシュのみ例外で保持）
+# OSMnx / application local cache（全22市町の軽量 .pkl / .csv キャッシュは高速起動のため保持し、大容量 .graphml 等は除外）
 cache/
 .cache/*
 !.cache/osm/
 .cache/osm/*
-!.cache/osm/尾道市_drive.pkl
-!.cache/osm/尾道市_detours.csv
-!.cache/osm/尾道市_disaster_facilities.csv
+!.cache/osm/*_drive.pkl
+!.cache/osm/*_detours.csv
+!.cache/osm/*_disaster_facilities.csv
 
 # OS / Editor
 .DS_Store

@@ -1,0 +1,5 @@
+﻿id,normal_distance_km,detour_distance_km,extra_distance_km,is_isolated,hospital_delay_km,hospital_isolated
+道_1848,0.03,6.72,6.69,False,3.19,False
+道_1849,0.42,6.33,5.91,False,2.35,False
+道_1850,0.2,6.55,6.35,False,3.25,False
+道_1851,0.35,6.4,6.05,False,3.46,False
