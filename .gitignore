@@ -10,9 +10,14 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
-# OSMnx / application local cache
+# OSMnx / application local cache（初期表示の尾道市キャッシュのみ例外で保持）
 cache/
-.cache/
+.cache/*
+!.cache/osm/
+.cache/osm/*
+!.cache/osm/尾道市_drive.pkl
+!.cache/osm/尾道市_detours.csv
+!.cache/osm/尾道市_disaster_facilities.csv
 
 # OS / Editor
 .DS_Store
